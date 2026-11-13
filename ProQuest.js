@@ -9,7 +9,7 @@
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2020-12-11 03:55:14"
+	"lastUpdated": "2025-07-31 17:15:12"
 }
 
 /*
@@ -33,10 +33,6 @@
  	along with Zotero. If not, see <http://www.gnu.org/licenses/>.
 
  	***** END LICENSE BLOCK ******/
-
-// attr()/text() v2
-// eslint-disable-next-line
-function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
 
 
 var language = "English";
@@ -75,9 +71,13 @@ function getTextValue(doc, fields) {
 
 // initializes field map translations
 function initLang(doc) {
-	var lang = ZU.xpathText(doc, '//a[span[contains(@class,"uxf-globe")]]');
-	if (lang && lang.trim() != "English") {
-		lang = lang.trim();
+	let lang = text(doc, '.gaMRLanguage');
+	if (!lang) lang = ZU.xpathText(doc, '//a[span[contains(@class,"uxf-globe")]]');
+	lang = lang.replace(/\u200e/g, ''); // Remove stray left-to-right markers
+	Z.debug('Full language label: ' + JSON.stringify(lang));
+	if (lang && lang != "English") {
+		lang = lang.split(',')[0].trim();
+		Z.debug('Trimmed language label: ' + JSON.stringify(lang));
 
 		// if already initialized, don't need to do anything else
 		if (lang == language) return;
@@ -102,7 +102,7 @@ function getSearchResults(doc, checkOnly, extras) {
 	var elements = doc.getElementsByClassName('resultListContainer');
 	
 	for (let i = 0; i < elements.length; i++) {
-		if (elements[i] && elements[i].offsetHeight > 0) {
+		if (elements[i] && elements[i].childElementCount) {
 			root = elements[i];
 			break;
 		}
@@ -172,7 +172,7 @@ function detectWeb(doc, url) {
 
 	// there is not much information about the item type in the pdf/fulltext page
 	let titleRow = text(doc, '.open-access');
-	if (titleRow && !text(doc, '.ol-login-link')) {
+	if (titleRow && doc.getElementById('docview-nav')) { // do not continue if there is no nav to the Abstract, as the translation will fail
 		if (getItemType([titleRow])) {
 			return getItemType([titleRow]);
 		}
@@ -223,10 +223,27 @@ function doWeb(doc, url, noFollow) {
 		});
 	}
 	else {
-		var abstractTab = doc.getElementById('tab-AbstractRecord-null') // Seems like that null is a bug and it might change at some point
-			|| doc.getElementById('tab-Record-null'); // Shown as Details
-		if (!(abstractTab && !abstractTab.classList.contains('active'))) {
-			Zotero.debug("On Abstract page, scraping");
+		// Third option is for EEBO
+		const abstractTab = doc.getElementById('addFlashPageParameterformat_abstract') || doc.getElementById('addFlashPageParameterformat_citation') || doc.getElementById("link_prefix_addFlashPageParameterformat_citation");
+		// E.g. on ERIC
+		const abstractView = doc.getElementsByClassName('abstractContainer');
+		if (abstractTab && abstractTab.classList.contains('active')) {
+			Zotero.debug("On Abstract tab and scraping");
+			scrape(doc, url, type);
+		}
+		else if (abstractTab && abstractTab.href) {
+			var link = abstractTab.href;
+			Zotero.debug("Going to the Abstract tab");
+			ZU.processDocuments(link, function (doc, url) {
+				doWeb(doc, url, true);
+			});
+		}
+		else if (abstractView.length) {
+			Zotero.debug("new Abstract view");
+			scrape(doc, url, type);
+		}
+		else if (doc.querySelector('.docViewFullCitation .display_record_indexing_row')) {
+			Zotero.debug("Full citation view");
 			scrape(doc, url, type);
 		}
 		else if (noFollow) {
@@ -234,51 +251,57 @@ function doWeb(doc, url, noFollow) {
 			scrape(doc, url, type);
 		}
 		else {
-			var link = abstractTab.getElementsByTagName('a')[0];
-			if (!link) {
-				throw new Error("Could not find the abstract/metadata link");
-			}
-			Zotero.debug("Going to the Abstract tab");
-			ZU.processDocuments(link.href, function (doc, url) {
-				doWeb(doc, url, true);
-			});
+			throw new Error("Could not find the abstract/metadata link");
 		}
 	}
 }
 
 function scrape(doc, url, type) {
 	var item = new Zotero.Item(type);
-
+	
 	// get all rows
 	var rows = doc.getElementsByClassName('display_record_indexing_row');
-
-	let label, value, enLabel;
+	
 	var dates = [], place = {}, altKeywords = [];
 
 	for (let i = 0, n = rows.length; i < n; i++) {
-		label = rows[i].childNodes[0];
-		value = rows[i].childNodes[1];
+		let labelElem = rows[i].childNodes[0];
+		let valueElem = rows[i].childNodes[1];
+		
+		if (!labelElem || !valueElem) continue;
 
-		if (!label || !value) continue;
-
-		label = label.textContent.trim();
-		value = value.textContent.trim();	// trimInternal?
+		let label = labelElem.textContent.trim();
+		let value = valueElem.textContent.trim();	// trimInternal?
 
 		// translate label
-		enLabel = L[label] || label;
+		let enLabel = L[label] || label;
 		let creatorType;
 		switch (enLabel) {
 			case 'Title':
 				if (value == value.toUpperCase()) value = ZU.capitalizeTitle(value, true);
 				item.title = value;
 				break;
+			case 'Collection name':
+				if (!item.title) {
+					item.title = value;
+				}
+				break;
 			case 'Author':
 			case 'Editor':	// test case?
-				creatorType = (enLabel == 'Author') ? 'author' : 'editor';
+			case 'People':
+				if (enLabel == 'Author') {
+					creatorType = 'author';
+				}
+				else if (enLabel == 'Editor') {
+					creatorType = 'editor';
+				}
+				else {
+					creatorType = 'contributor';
+				}
 				
 				// Use titles of a tags if they exist, since these don't include
-				// affiliations
-				value = ZU.xpathText(rows[i].childNodes[1], "a/@title", null, "; ") || value;
+				// affiliations; don't include links to ORCID profiles
+				value = ZU.xpathText(valueElem, "a[not(@id='orcidLink')]/@title", null, "; ") || value;
 
 				value = value.replace(/^by\s+/i, '')	// sometimes the authors begin with "By"
 							.split(/\s*;\s*|\s+and\s+/i);
@@ -287,6 +310,36 @@ function scrape(doc, url, type) {
 					// TODO: might have to detect proper creator type from item type*/
 					item.creators.push(
 						ZU.cleanAuthor(value[j], creatorType, value[j].includes(',')));
+				}
+				break;
+			case 'Signator':
+				if (item.itemType == 'letter') {
+					for (let signator of valueElem.querySelectorAll('a')) {
+						let name = signator.textContent;
+						item.creators.push(
+							ZU.cleanAuthor(name, 'author', name.includes(',')));
+					}
+				}
+				break;
+			case 'Recipient':
+				if (item.itemType == 'letter') {
+					for (let recipient of valueElem.querySelectorAll('a')) {
+						let name = recipient.textContent;
+						if (/\b(department|bureau|office|director)\b/i.test(name)) {
+							// a general edge case that we handle specifically,
+							// but institutional recipients are common and we'd
+							// like not to split the name when we can
+							item.creators.push({
+								lastName: name,
+								creatorType: 'recipient',
+								fieldMode: 1
+							});
+						}
+						else {
+							item.creators.push(
+								ZU.cleanAuthor(name, 'recipient', name.includes(',')));
+						}
+					}
 				}
 				break;
 			case 'Publication title':
@@ -308,7 +361,7 @@ function scrape(doc, url, type) {
 				item.ISBN = value;
 				break;
 			case 'DOI':	// test case?
-				item.DOI = value;
+				item.DOI = ZU.cleanDOI(value);
 				break;
 			case 'Copyright':
 				item.rights = value;
@@ -334,17 +387,35 @@ function scrape(doc, url, type) {
 				item.thesisType = value;
 				break;
 			case 'Publisher':
-				item.publisher = value;
+			case 'Printer/Publisher':
+				item.publisher = valueElem.innerText.split('\n')[0];
+				break;
+			case 'Repository':
+				item.archive = value;
+				break;
+			case 'Accession number/LC reference':
+				item.archiveLocation = value;
 				break;
 
 			case 'Identifier / keyword':
-				item.tags = value.split(/\s*(?:,|;)\s*/);
-				break;
-			// alternative tags
+			case 'NUCMC index term':
 			case 'Subject':
+				if (valueElem.querySelector('a')) {
+					item.tags.push(...Array.from(valueElem.querySelectorAll('a'))
+						.map(a => a.textContent.replace(/\.$/, '')));
+				}
+				else {
+					item.tags.push(...value.split(/\s*(?:,|;)\s*/));
+				}
+				break;
 			case 'Journal subject':
 			case 'Publication subject':
+				// alternative tags
 				altKeywords.push(value);
+				break;
+
+			case 'Publication note':
+				item.notes.push({ note: valueElem.innerText }); // Keep line breaks
 				break;
 
 			// we'll figure out proper location later
@@ -362,7 +433,9 @@ function scrape(doc, url, type) {
 
 			// multiple dates are provided
 			// more complete dates are preferred
+			case 'Date':
 			case 'Publication date':
+			case 'Degree date':
 				dates[2] = value;
 				break;
 			case 'Publication year':
@@ -372,9 +445,17 @@ function scrape(doc, url, type) {
 				dates[0] = value;
 				break;
 
-			// we know about these, skip
+			// we already know about these; we can skip them unless we want to
+			// disambiguate a general item type
 			case 'Source type':
+				break;
 			case 'Document type':
+				if (item.itemType == 'letter') {
+					if (value.trim().toLowerCase() != 'letter') {
+						item.letterType = value;
+					}
+				}
+				break;
 			case 'Record type':
 			case 'Database':
 				break;
@@ -384,7 +465,11 @@ function scrape(doc, url, type) {
 		}
 	}
 
-	item.url = url.replace(/\baccountid=[^&#]*&?/, '').replace(/\?(?:#|$)/, '');
+	if (!item.title) {
+		item.title = text(doc, '#documentTitle');
+	}
+
+	item.url = url.replace(/&?(accountid|parentSessionId)=[^&#]*/g, '').replace(/\?(?:#|$)/, '').replace('?&', '?');
 	if (item.itemType == "thesis" && place.schoolLocation) {
 		item.place = place.schoolLocation;
 	}
@@ -428,13 +513,18 @@ function scrape(doc, url, type) {
 	if (!item.publicationTitle
 		&& ZU.fieldIsValidForType('publicationTitle', item.itemType)) {
 		var pubTitle = ZU.xpathText(byline, './/a[@id="lateralSearch"]');
+		if (!pubTitle) {
+			pubTitle = text(doc, '#authordiv .newspaperArticle .pub-tooltip-trigger')
+				|| text(doc, '#authordiv .newspaperArticle strong');
+		}
 		// remove date range
 		if (pubTitle) item.publicationTitle = pubTitle.replace(/\s*\(.+/, '');
 	}
 
 	var date = ZU.xpathText(byline, './text()');
 	if (date) date = date.match(/]\s+(.+?):/);
-	if (date) date = date[1];
+	// Convert date to ISO to make sure we don't save random strings
+	if (date) date = ZU.strToISO(date[1]);
 	// add date if we only have a year and date is longer in the byline
 	if (date
 		&& (!item.date
@@ -442,7 +532,17 @@ function scrape(doc, url, type) {
 		item.date = date;
 	}
 
-	item.abstractNote = ZU.xpath(doc, '//div[contains(@id, "abstractSummary_")]/p')
+	// Historical Newspapers: date and page are in title
+	if (item.itemType == 'newspaperArticle') {
+		let matches = item.title.match(/^(\w+ \d{1,2}, \d{4}) \(Page (\d+)/);
+		if (matches) {
+			let [, date, pageNumber] = matches;
+			item.date = ZU.strToISO(date);
+			item.pages = pageNumber;
+		}
+	}
+
+	item.abstractNote = ZU.xpath(doc, '//div[contains(@id, "abstractSummary_")]//p')
 		.map(function (p) {
 			return ZU.trimInternal(p.textContent);
 		}).join('\n');
@@ -451,10 +551,11 @@ function scrape(doc, url, type) {
 		item.tags = altKeywords.join(',').split(/\s*(?:,|;)\s*/);
 	}
 	
-	if (doc.getElementById('downloadPDFLink')) {
+	let pdfLink = doc.querySelector('[id^="downloadPDFLink"]');
+	if (pdfLink && !pdfLink.closest('#suggestedSourcesBelowFullText')) {
 		item.attachments.push({
 			title: 'Full Text PDF',
-			url: doc.getElementById('downloadPDFLink').href,
+			url: pdfLink.href,
 			mimeType: 'application/pdf',
 			proxy: false
 		});
@@ -534,6 +635,17 @@ function getItemType(types) {
 		else if (testString.includes("statute")) {
 			return "statute";
 		}
+		else if (testString.includes("letter") || testString.includes("cable")) {
+			guessType = "letter";
+		}
+		else if (testString.includes("archival material")) {
+			guessType = "manuscript";
+		}
+	}
+
+	// We don't have localized strings for item types, so just guess that it's a journal article
+	if (!guessType && language != 'English') {
+		return 'journalArticle';
 	}
 
 	return guessType;
@@ -624,6 +736,7 @@ var fieldNames = {
 		School: 'المدرسة',
 		Degree: 'الدرجة',
 		Publisher: 'الناشر',
+		"Printer/Publisher": 'جهة الطباعة/الناشر',
 		"Place of publication": 'مكان النشر',
 		"School location": 'موقع المدرسة',
 		"Country of publication": 'بلد النشر',
@@ -657,6 +770,7 @@ var fieldNames = {
 		School: 'Sekolah',
 		Degree: 'Gelar',
 		Publisher: 'Penerbit',
+		"Printer/Publisher": 'Pencetak/Penerbit',
 		"Place of publication": 'Tempat publikasi',
 		"School location": 'Lokasi sekolah',
 		"Country of publication": 'Negara publikasi',
@@ -690,6 +804,7 @@ var fieldNames = {
 		School: 'Instituce',
 		Degree: 'Stupeň',
 		Publisher: 'Vydavatel',
+		"Printer/Publisher": 'Tiskař/vydavatel',
 		"Place of publication": 'Místo vydání',
 		"School location": 'Místo instituce',
 		"Country of publication": 'Země vydání',
@@ -723,6 +838,7 @@ var fieldNames = {
 		School: 'Bildungseinrichtung',
 		Degree: 'Studienabschluss',
 		Publisher: 'Herausgeber',
+		"Printer/Publisher": 'Drucker/Verleger',
 		"Place of publication": 'Verlagsort',
 		"School location": 'Standort der Bildungseinrichtung',
 		"Country of publication": 'Publikationsland',
@@ -756,6 +872,7 @@ var fieldNames = {
 		School: 'Institución',
 		Degree: 'Título universitario',
 		Publisher: 'Editorial',
+		"Printer/Publisher": 'Imprenta/publicista',
 		"Place of publication": 'Lugar de publicación',
 		"School location": 'Lugar de la institución',
 		"Country of publication": 'País de publicación',
@@ -786,9 +903,11 @@ var fieldNames = {
 		"Publication year": 'Année de publication',
 		Year: 'Année',
 		Pages: 'Pages',
+		"First page": 'Première page',
 		School: 'École',
 		Degree: 'Diplôme',
 		Publisher: 'Éditeur',
+		"Printer/Publisher": 'Imprimeur/Éditeur',
 		"Place of publication": 'Lieu de publication',
 		"School location": "Localisation de l'école",
 		"Country of publication": 'Pays de publication',
@@ -822,6 +941,7 @@ var fieldNames = {
 		School: '학교',
 		Degree: '학위',
 		Publisher: '출판사',
+		"Printer/Publisher": '인쇄소/출판사',
 		"Place of publication": '출판 지역',
 		"School location": '학교 지역',
 		"Country of publication": '출판 국가',
@@ -855,6 +975,7 @@ var fieldNames = {
 		School: 'Istituzione accademica',
 		Degree: 'Titolo accademico',
 		Publisher: 'Casa editrice',
+		"Printer/Publisher": 'Tipografo/Editore',
 		"Place of publication": 'Luogo di pubblicazione:',
 		"School location": 'Località istituzione accademica',
 		"Country of publication": 'Paese di pubblicazione',
@@ -888,6 +1009,7 @@ var fieldNames = {
 		School: 'Iskola',
 		Degree: 'Diploma',
 		Publisher: 'Kiadó',
+		"Printer/Publisher": 'Nyomda/kiadó',
 		"Place of publication": 'Publikáció helye',
 		"School location": 'Iskola helyszíne:',
 		"Country of publication": 'Publikáció országa',
@@ -921,6 +1043,7 @@ var fieldNames = {
 		School: '学校',
 		Degree: '学位称号',
 		Publisher: '出版社',
+		"Printer/Publisher": '印刷業者/出版社',
 		"Place of publication": '出版地',
 		"School location": '学校所在地',
 		"Country of publication": '出版国',
@@ -954,6 +1077,7 @@ var fieldNames = {
 		School: 'Skole',
 		Degree: 'Grad',
 		Publisher: 'Utgiver',
+		"Printer/Publisher": 'Trykkeri/utgiver',
 		"Place of publication": 'Utgivelsessted',
 		"School location": 'Skolested',
 		"Country of publication": 'Utgivelsesland',
@@ -987,6 +1111,7 @@ var fieldNames = {
 		School: 'Uczelnia',
 		Degree: 'Stopień',
 		Publisher: 'Wydawca',
+		"Printer/Publisher": 'Drukarnia/wydawnictwo',
 		"Place of publication": 'Miejsce publikacji',
 		"School location": 'Lokalizacja uczelni',
 		"Country of publication": 'Kraj publikacji',
@@ -1020,6 +1145,7 @@ var fieldNames = {
 		School: 'Escola',
 		Degree: 'Graduação',
 		Publisher: 'Editora',
+		"Printer/Publisher": 'Editora/selo',
 		"Place of publication": 'Local de publicação',
 		"School location": 'Localização da escola',
 		"Country of publication": 'País de publicação',
@@ -1053,6 +1179,7 @@ var fieldNames = {
 		School: 'Escola',
 		Degree: 'Licenciatura',
 		Publisher: 'Editora',
+		"Printer/Publisher": 'Editora/selo',
 		"Place of publication": 'Local de publicação',
 		"School location": 'Localização da escola',
 		"Country of publication": 'País de publicação',
@@ -1086,6 +1213,7 @@ var fieldNames = {
 		School: 'Учебное заведение',
 		Degree: 'Степень',
 		Publisher: 'Издательство',
+		"Printer/Publisher": 'Типография/издатель',
 		"Place of publication": 'Место публикации',
 		"School location": 'Местонахождение учебного заведения',
 		"Country of publication": 'Страна публикации',
@@ -1119,6 +1247,7 @@ var fieldNames = {
 		School: 'สถาบันการศึกษา',
 		Degree: 'ปริญญาบัตร',
 		Publisher: 'สำนักพิมพ์',
+		"Printer/Publisher": 'ผู้ตีพิมพ์/ผู้เผยแพร่',
 		"Place of publication": 'สถานที่พิมพ์',
 		"School location": 'สถานที่ตั้งของสถาบันการศึกษา',
 		"Country of publication": 'ประเทศที่พิมพ์',
@@ -1152,6 +1281,7 @@ var fieldNames = {
 		School: 'Okul',
 		Degree: 'Derece',
 		Publisher: 'Yayıncı',
+		"Printer/Publisher": 'Basımevi/Yayınc',
 		"Place of publication": 'Basım yeri',
 		"School location": 'Okul konumu',
 		"Country of publication": 'Yayınlanma ülkesi',
@@ -1159,7 +1289,7 @@ var fieldNames = {
 		Subject: 'Konu',
 		"Journal subject": 'Dergi konusu'
 	},
-	'中文(简体)‎': {
+	'中文(简体)': {
 		"Source type": '来源类型',
 		"Document type": '文档类型',
 		// "Record type"
@@ -1185,6 +1315,7 @@ var fieldNames = {
 		School: '学校',
 		Degree: '学位',
 		Publisher: '出版商',
+		"Printer/Publisher": '印刷商/出版商',
 		"Place of publication": '出版物地点',
 		"School location": '学校地点',
 		"Country of publication": '出版物国家/地区',
@@ -1218,6 +1349,7 @@ var fieldNames = {
 		School: '學校',
 		Degree: '學位',
 		Publisher: '出版者',
+		"Printer/Publisher": '印刷者/出版者',
 		"Place of publication": '出版地',
 		"School location": '學校地點',
 		"Country of publication": '出版國家/地區',
@@ -1231,7 +1363,7 @@ var fieldNames = {
 var testCases = [
 	{
 		"type": "web",
-		"url": "https://search.proquest.com/dissertations/docview/251755786/abstract/132B8A749B71E82DBA1/1",
+		"url": "https://www.proquest.com/dissertations/docview/251755786/abstract/132B8A749B71E82DBA1/1?sourcetype=Dissertations%20&%20Theses",
 		"items": [
 			{
 				"itemType": "thesis",
@@ -1253,7 +1385,7 @@ var testCases = [
 				"shortTitle": "Beyond Stanislavsky",
 				"thesisType": "Ph.D.",
 				"university": "The Ohio State University",
-				"url": "https://search.proquest.com/dissertations/docview/251755786/abstract/132B8A749B71E82DBA1/1",
+				"url": "https://www.proquest.com/dissertations/docview/251755786/abstract/132B8A749B71E82DBA1/1?sourcetype=Dissertations%20&%20Theses",
 				"attachments": [
 					{
 						"title": "Full Text PDF",
@@ -1266,9 +1398,6 @@ var testCases = [
 						"tag": "Communication and the arts"
 					},
 					{
-						"tag": "Konstantin"
-					},
-					{
 						"tag": "Konstantin Stanislavsky"
 					},
 					{
@@ -1278,7 +1407,10 @@ var testCases = [
 						"tag": "Russian"
 					},
 					{
-						"tag": "Stanislavsky"
+						"tag": "Stanislavsky, Konstantin"
+					},
+					{
+						"tag": "Theater"
 					},
 					{
 						"tag": "Theater"
@@ -1355,7 +1487,7 @@ var testCases = [
 	},
 	{
 		"type": "web",
-		"url": "https://search.proquest.com/hnpnewyorktimes/docview/122485317/abstract/1357D8A4FC136DF28E3/11",
+		"url": "https://www.proquest.com/hnpnewyorktimes/docview/122485317/abstract/1357D8A4FC136DF28E3/11?sourcetype=Newspapers",
 		"items": [
 			{
 				"itemType": "newspaperArticle",
@@ -1372,7 +1504,7 @@ var testCases = [
 						"creatorType": "author"
 					}
 				],
-				"date": "1984",
+				"date": "Aug 22, 1984",
 				"ISSN": "03624331",
 				"abstractNote": "For some months now, a gradual thaw has been in the making between East Germany and West Germany. So far, the United States has paid scant attention -- an attitude very much in keeping with our neglect of East Germany throughout the postwar period. We should reconsider this policy before things much further -- and should in particular begin to look more closely at what is going on in East Germany.",
 				"libraryCatalog": "ProQuest",
@@ -1380,7 +1512,7 @@ var testCases = [
 				"place": "New York, N.Y., United States",
 				"publicationTitle": "New York Times",
 				"rights": "Copyright New York Times Company Aug 22, 1984",
-				"url": "https://search.proquest.com/hnpnewyorktimes/docview/122485317/abstract/1357D8A4FC136DF28E3/11",
+				"url": "https://www.proquest.com/hnpnewyorktimes/docview/122485317/abstract/1357D8A4FC136DF28E3/11?sourcetype=Newspapers",
 				"attachments": [
 					{
 						"title": "Full Text PDF",
@@ -1400,7 +1532,7 @@ var testCases = [
 	},
 	{
 		"type": "web",
-		"url": "https://search.proquest.com/docview/129023293/abstract",
+		"url": "https://www.proquest.com/docview/129023293/abstract?sourcetype=Historical%20Newspapers",
 		"items": [
 			{
 				"itemType": "newspaperArticle",
@@ -1415,7 +1547,7 @@ var testCases = [
 				"publicationTitle": "Wall Street Journal (1889-1922)",
 				"rights": "Copyright Dow Jones & Company Inc Dec 5, 1905",
 				"shortTitle": "THE PRESIDENT AND ALDRICH.",
-				"url": "https://search.proquest.com/docview/129023293/abstract",
+				"url": "https://www.proquest.com/docview/129023293/abstract?sourcetype=Historical%20Newspapers",
 				"attachments": [
 					{
 						"title": "Full Text PDF",
@@ -1659,7 +1791,7 @@ var testCases = [
 	},
 	{
 		"type": "web",
-		"url": "https://search.proquest.com/docview/1297954386/citation",
+		"url": "https://www.proquest.com/docview/1297954386/citation?sourcetype=Scholarly%20Journals",
 		"items": [
 			{
 				"itemType": "journalArticle",
@@ -1674,12 +1806,11 @@ var testCases = [
 				"date": "Nov 1, 1990",
 				"ISSN": "0275-0392",
 				"issue": "4",
-				"language": "English",
 				"libraryCatalog": "ProQuest",
 				"pages": "486–498",
 				"publicationTitle": "Human Rights Quarterly",
 				"shortTitle": "Women's Rights as Human Rights",
-				"url": "https://search.proquest.com/docview/1297954386/citation",
+				"url": "https://www.proquest.com/docview/1297954386/citation?sourcetype=Scholarly%20Journals",
 				"volume": "12",
 				"attachments": [
 					{
@@ -1709,6 +1840,365 @@ var testCases = [
 					},
 					{
 						"tag": "Sociology"
+					}
+				],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.proquest.com/dnsa/docview/1679056926/fulltextPDF/8C1FDDD8E506429BPQ/1",
+		"detectedItemType": "journalArticle",
+		"items": [
+			{
+				"itemType": "letter",
+				"title": "Kidnapping of Ambassador Dubs: Sitrep No. 3",
+				"creators": [
+					{
+						"lastName": "United States. Department of State",
+						"creatorType": "recipient",
+						"fieldMode": 1
+					},
+					{
+						"firstName": "J. Bruce",
+						"lastName": "Amstutz",
+						"creatorType": "author"
+					}
+				],
+				"date": "February 14, 1979",
+				"language": "English",
+				"letterType": "Cable",
+				"libraryCatalog": "ProQuest",
+				"shortTitle": "Kidnapping of Ambassador Dubs",
+				"url": "https://www.proquest.com/dnsa/docview/1679056926/abstract/F71353DE52F74E3BPQ/1",
+				"attachments": [
+					{
+						"title": "Full Text PDF",
+						"mimeType": "application/pdf",
+						"proxy": false
+					}
+				],
+				"tags": [
+					{
+						"tag": "Adolph Kidnapping (14 February 1979)"
+					},
+					{
+						"tag": "Afghanistan. National Police"
+					},
+					{
+						"tag": "Dubs"
+					},
+					{
+						"tag": "Police officers"
+					},
+					{
+						"tag": "Soviet advisors"
+					}
+				],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.proquest.com/dnsa/docview/1679145498/abstract/BA3C959768F54C93PQ/16?sourcetype=Government%20&%20Official%20Publications",
+		"items": [
+			{
+				"itemType": "letter",
+				"title": "[Dear Colleague Letter regarding Prosecution of Yasir Arafat; Includes Letter to Edwin Meese, List of Senators Signing Letter, and Washington Times Article Dated February 7, 1986]",
+				"creators": [
+					{
+						"firstName": "Yasir",
+						"lastName": "Arafat",
+						"creatorType": "contributor"
+					},
+					{
+						"firstName": "Edwin III",
+						"lastName": "Meese",
+						"creatorType": "contributor"
+					},
+					{
+						"firstName": "George Curtis",
+						"lastName": "Moore",
+						"creatorType": "contributor"
+					},
+					{
+						"firstName": "Cleo A.",
+						"lastName": "Noel",
+						"creatorType": "contributor"
+					},
+					{
+						"firstName": "Ronald W.",
+						"lastName": "Reagan",
+						"creatorType": "contributor"
+					},
+					{
+						"firstName": "United States Congress",
+						"lastName": "Senate",
+						"creatorType": "author"
+					}
+				],
+				"date": "January 24, 1986",
+				"language": "English",
+				"libraryCatalog": "ProQuest",
+				"url": "https://www.proquest.com/dnsa/docview/1679145498/abstract/BA3C959768F54C93PQ/16?sourcetype=Government%20&%20Official%20Publications",
+				"attachments": [
+					{
+						"title": "Full Text PDF",
+						"mimeType": "application/pdf",
+						"proxy": false
+					}
+				],
+				"tags": [
+					{
+						"tag": "Biden, Joseph R., Jr. [et al.]"
+					},
+					{
+						"tag": "Indictments"
+					},
+					{
+						"tag": "Khartoum Embassy Takeover and Assassinations (1973)"
+					},
+					{
+						"tag": "Washington Post"
+					},
+					{
+						"tag": "Washington Times"
+					}
+				],
+				"notes": [
+					{
+						"note": "Article copyrighted by the Washington Times; used by permission (previously published document)"
+					}
+				],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.proquest.com/docview/2240944639/citation/DC389F101A924D14PQ/1?sourcetype=Books",
+		"items": [
+			{
+				"itemType": "book",
+				"title": "Stereometrie: or the art of practical gauging shewing in two parts, first, divers facil and compendious ways for gauging of tunns and brewers vessels, of all forms and figures, either in whole, or gradualy, form inch to inch: whether the tunn, or vessels bases above and below be homogeneal, or heterogeneal. Parallel and alike-situate, or not. Secondly, the gauging of any wine, brandy, or oyl cask; be the same assum'd as sphæroidal, parabolical, conical, or cylindrical; either full, or partly empty, and at any position of the cask, or altitude of contained liquor: performed either by brief calculation, or instrumental operation. Together with a large table of area's of a circles segments, and other necessary tables, & their excellent utilities and emprovements; with a copious and methodical index of the whole; rendring the work perspicuous and intelligible to mean capacities. / By John Smith, philo-accomptant.",
+				"creators": [
+					{
+						"firstName": "John",
+						"lastName": "Smith",
+						"creatorType": "author"
+					}
+				],
+				"date": "1673",
+				"language": "English",
+				"libraryCatalog": "ProQuest",
+				"numPages": "[30], 304 p., [3] leaves of plates :",
+				"publisher": "Londonprinted by William Godbid, for William Shrowsbury, at the Bible in Duck-Lane",
+				"shortTitle": "Stereometrie",
+				"url": "https://www.proquest.com/docview/2240944639/citation/DC389F101A924D14PQ/1?sourcetype=Books",
+				"attachments": [
+					{
+						"title": "Full Text PDF",
+						"mimeType": "application/pdf",
+						"proxy": false
+					}
+				],
+				"tags": [
+					{
+						"tag": "Agriculture, viticulture, texts on hunting, veterinary science"
+					},
+					{
+						"tag": "Gaging - Early works to 1800"
+					},
+					{
+						"tag": "Liquors - Gaging and testing - Early works to 1800"
+					},
+					{
+						"tag": "Science and mathematics"
+					},
+					{
+						"tag": "Wine and wine making - Gaging and testing - Early works to 1800"
+					}
+				],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.proquest.com/docview/2661071397?sourcetype=Books",
+		"items": [
+			{
+				"itemType": "book",
+				"title": "A Pragmatic Future for NAEP: Containing Costs and Updating Technologies. Consensus Study Report",
+				"creators": [],
+				"date": "2022",
+				"ISBN": "9780309275323",
+				"abstractNote": "The National Assessment of Educational Progress (NAEP) -- often called \"The Nation's Report Card\" -- is the largest nationally representative and continuing assessment of what students in public and private schools in the United States know and can do in various subjects and has provided policy makers and the public with invaluable information on U.S. students for more than 50 years. Unique in the information it provides, NAEP is the nation's only mechanism for tracking student achievement over time and comparing trends across states and districts for all students and important student groups (e.g., by race, sex, English learner status, disability status, family poverty status). While the program helps educators, policymakers, and the public understand these educational outcomes, the program has incurred substantially increased costs in recent years and now costs about $175.2 million per year. \"A Pragmatic Future for NAEP: Containing Costs and Updating Technologies\" recommends changes to bolster the future success of the program by identifying areas where federal administrators could take advantage of savings, such as new technological tools and platforms as well as efforts to use local administration and deployment for the tests. Additionally, the report recommends areas where the program should clearly communicate about spending and undertake efforts to streamline management. The report also provides recommendations to increase the visibility and coherence of NAEP's research activities. [Contributors include the Division of Behavioral and Social Sciences and Education; Committee on National Statistics; and Panel on Opportunities for the National Assessment of Educational Progress in an Age of AI and Pervasive Computation: A Pragmatic Vision.]",
+				"language": "English",
+				"libraryCatalog": "ProQuest",
+				"publisher": "National Academies Press",
+				"shortTitle": "A Pragmatic Future for NAEP",
+				"url": "https://www.proquest.com/docview/2661071397?sourcetype=Books",
+				"attachments": [],
+				"tags": [],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.proquest.com/archivefinder/docview/2747312572/EC990146E3B1499EPQ/1?sourcetype=Archival%20Materials",
+		"items": [
+			{
+				"itemType": "manuscript",
+				"title": "Stamp Act collection",
+				"creators": [],
+				"date": "1765-1768",
+				"abstractNote": "Two reprints (ca. 1843) of the British Stamp Act of 1765; two photocopies of stamps; transcript of a Northampton County, Va., court declaration (1766 Feb. 11) that the act was not binding; contemporary copies of three letters (1766 Feb. 28, Mar. 18, and June 13) relating to the act from English merchants to the colonies, the second letter addressed to John Hancock; and copybook containing transcriptions of letters (1765-1766) from the Court of St. James documenting the reaction of King George III and his government to the protests of American colonists to the Stamp Act. In part, photocopy (positive) and transcripts (handwritten and typewritten); [S.l.]. Typewritten Copy of Northampton County court document made with permission of Clifford I. Millard,; Washington, D.C. : Library of Congress, Manuscript Division, 1932. Forms part of: Miscellaneous Manuscripts collection.",
+				"language": "English",
+				"libraryCatalog": "ProQuest",
+				"url": "https://www.proquest.com/archivefinder/docview/2747312572/EC990146E3B1499EPQ/1?sourcetype=Archival%20Materials",
+				"attachments": [],
+				"tags": [
+					{
+						"tag": "Courts; Virginia; Northampton County"
+					},
+					{
+						"tag": "George; III,; King of Great Britain, 1738-1820"
+					},
+					{
+						"tag": "Great Britain; Colonies; America"
+					},
+					{
+						"tag": "Great Britain; Court and courtiers; History; 18th century"
+					},
+					{
+						"tag": "Great Britain; Politics and government; 1760-1789"
+					},
+					{
+						"tag": "Great Britain; Stamp Act (1765)"
+					},
+					{
+						"tag": "Hancock, John, 1737-1793; Correspondence"
+					},
+					{
+						"tag": "Merchants; England; London; History; 18th century"
+					},
+					{
+						"tag": "NUCMC (US Library Of Congress) records"
+					},
+					{
+						"tag": "Northampton County (Va.); History"
+					},
+					{
+						"tag": "United States; Politics and government; To 1775"
+					},
+					{
+						"tag": "Virginia; History; Colonial period, ca. 1600-1775"
+					}
+				],
+				"notes": [
+					{
+						"note": "Contents of repository: 38,000,000 items\n\nRepository date coverage: 17th century - present\n\nRepository materials: All areas of American history and culture. Will also accept photographic copies of collections located elsewhere but within the scope of solicitation.\n\nHoldings: The Manuscript Division's holdings, more than fifty million items in eleven thousand separate collections, include some of the greatest manuscript treasures of American history and culture and support scholarly research in many aspects of political, cultural, and scientific history."
+					}
+				],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.proquest.com/docview/1857162562/1CFAA6FD31BB4E64PQ/5?sourcetype=Historical%20Newspapers&parentSessionId=abcxyz",
+		"items": [
+			{
+				"itemType": "newspaperArticle",
+				"title": "March 25, 1958 (Page 17 of 30)",
+				"creators": [],
+				"date": "1958-03-25",
+				"language": "English",
+				"libraryCatalog": "ProQuest",
+				"pages": "17",
+				"place": "Pittsburgh, United States",
+				"publicationTitle": "Pittsburgh Post-Gazette",
+				"rights": "Copyright Pittsburgh Post Gazette Mar 25, 1958",
+				"url": "https://www.proquest.com/docview/1857162562/1CFAA6FD31BB4E64PQ/5?sourcetype=Historical%20Newspapers",
+				"attachments": [
+					{
+						"title": "Full Text PDF",
+						"mimeType": "application/pdf",
+						"proxy": false
+					}
+				],
+				"tags": [],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.proquest.com/docview/2778644623/fulltextPDF/DE90C00EE80640EDPQ/1?sourcetype=Dissertations%20&%20Theses",
+		"items": [
+			{
+				"itemType": "thesis",
+				"title": "A Comparison of the Mental Health of Police Officers and Correctional Officers in Rural Appalachia",
+				"creators": [
+					{
+						"firstName": "Sierra",
+						"lastName": "Thomas",
+						"creatorType": "author"
+					}
+				],
+				"date": "2022",
+				"abstractNote": "The purpose of this study was to explore perceptions of mental health among police officers and correctional officers within rural Appalachia. The main goal of this research was to better understand how the occupational demands of working in the criminal justice field can impact one’s mental health over time. Several research questions were explored, including the prevalence of various mental health problems, associated stressors, the structure of support among officers, and the perceptions of mental health treatment services. Data were gathered through semi-structured interviews with 21 police and correctional officers located in rural Appalachia. Results provided a better understanding of the mental health of rural officers as well as the associated stressors and protective factors. Findings also further explored the perceptions and utilization of the available treatment services.",
+				"language": "English",
+				"libraryCatalog": "ProQuest",
+				"numPages": "121",
+				"place": "United States -- Tennessee",
+				"rights": "Database copyright ProQuest LLC; ProQuest does not claim copyright in the individual underlying works.",
+				"thesisType": "M.A.",
+				"university": "East Tennessee State University",
+				"url": "https://www.proquest.com/docview/2778644623/abstract/72FDDD77DA764D43PQ/1",
+				"attachments": [
+					{
+						"title": "Full Text PDF",
+						"mimeType": "application/pdf",
+						"proxy": false
+					}
+				],
+				"tags": [
+					{
+						"tag": "Clinical psychology"
+					},
+					{
+						"tag": "Correctional personnel"
+					},
+					{
+						"tag": "Law enforcement"
+					},
+					{
+						"tag": "Mental depression"
+					},
+					{
+						"tag": "Mental disorders"
+					},
+					{
+						"tag": "Mental health"
+					},
+					{
+						"tag": "Post traumatic stress disorder"
+					},
+					{
+						"tag": "Psychology"
+					},
+					{
+						"tag": "Suicides & suicide attempts"
 					}
 				],
 				"notes": [],

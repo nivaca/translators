@@ -16,7 +16,7 @@
 	"inRepository": true,
 	"translatorType": 3,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2019-09-01 13:38:00"
+	"lastUpdated": "2022-09-30 10:56:50"
 }
 
 var n = {
@@ -360,7 +360,7 @@ function getBlankNode(attachToNode, itemPredicate, blankNodePairs, create) {
  * A class representing a Zotero-to-BIBO type mapping
  * @property zoteroType {String} The corresponding Zotero type name
  */
-Type = function(type, typeDefinition) {
+var Type = function(type, typeDefinition) {
 	this.zoteroType = type;
 	this[ITEM] = {"pairs":typeDefinition[0]};
 	this[SUBCONTAINER] = typeDefinition[1] ? {"alwaysAdd":typeDefinition[1][0],
@@ -586,7 +586,7 @@ Type.prototype.createNodes = function(item) {
 /**
  * A class representing a BIBO-to-Zotero literal property mapping
  */
-LiteralProperty = function(field) {
+var LiteralProperty = function(field) {
 	this.field = field;
 	this.mapping = FIELDS[field];
 	if (!this.mapping) {
@@ -642,7 +642,7 @@ LiteralProperty.prototype.mapFromItem = function(item, nodes) {
 /**
  * A class representing a BIBO-to-Zotero creator mapping
  */
-CreatorProperty = function(field) {
+var CreatorProperty = function(field) {
 	this.field = field;
 	this.mapping = CREATORS[field];
 }
@@ -785,7 +785,15 @@ function getStatementsByDefinition(definition, node) {
 
 function detectImport() {
 	// look for a bibo item type
-	var rdfTypes = Zotero.RDF.getStatementsMatching(null, RDF_TYPE, null);
+	let rdfTypes = null;
+	try {
+		rdfTypes = Zotero.RDF.getStatementsMatching(null, RDF_TYPE, null);
+	}
+	catch (err) {
+		// probably just not RDF
+		return false;
+	}
+
 	if (rdfTypes) {
 		for (var i=0; i<rdfTypes.length; i++) {
 			if (typeof rdfTypes[i][2] === "object" && Z.RDF.getResourceURI(rdfTypes[i][2]).substr(0, BIBO_NS_LENGTH) == n.bibo) return true;
@@ -1063,6 +1071,10 @@ function doExport() {
 	var item;
 	var items = {};
 	while (item = Zotero.nextItem()) {
+		// Skip standalone notes
+		if (item.itemType == 'note') {
+			continue;
+		}
 		items[item.itemID] = item;
 	}
 	var autoTags = {};

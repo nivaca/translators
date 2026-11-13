@@ -1,13 +1,11 @@
 {
 	"translatorID": "b6e39b57-8942-4d11-8259-342c46ce395f",
-	"translatorType": 2,
 	"label": "BibLaTeX",
 	"creator": "Simon Kornblith, Richard Karnesky and Anders Johansson",
 	"target": "bib",
 	"minVersion": "2.1.9",
-	"maxVersion": "null",
+	"maxVersion": "",
 	"priority": 100,
-	"inRepository": true,
 	"configOptions": {
 		"getCollections": true
 	},
@@ -17,7 +15,9 @@
 		"exportFileData": false,
 		"useJournalAbbreviation": false
 	},
-	"lastUpdated": "2019-12-15 14:26:00"
+	"inRepository": true,
+	"translatorType": 2,
+	"lastUpdated": "2026-04-01 18:00:00"
 }
 
 /*
@@ -302,9 +302,8 @@ function writeField(field, value, isMacro, noEscape) {
 
 		// Case of words with uppercase characters in non-initial positions is preserved with braces.
 		// we're looking at all unicode letters
-		var protectCaps = new ZU.XRegExp("\\b\\p{Letter}+\\p{Uppercase_Letter}\\p{Letter}*", 'g');
 		if (field != "pages") {
-			value = ZU.XRegExp.replace(value, protectCaps, "{$0}");
+			value = value.replace(/\b\p{L}+\p{Lu}\p{L}*/gu, "{$&}");
 		}
 
 		// Page ranges should use double dash
@@ -371,7 +370,7 @@ var numberRe = /^[0-9]+/;
 // it includes the indefinite articles of English, German, French and Spanish, as well as a small set of English prepositions whose
 // force is more grammatical than lexical, i.e. which are likely to strike many as 'insignificant'.
 // The assumption is that most who want a title word in their key would prefer the first word of significance.
-var citeKeyTitleBannedRe = /\b(a|an|the|some|from|on|in|to|of|do|with|der|die|das|ein|eine|einer|eines|einem|einen|un|une|la|le|l'|el|las|los|al|uno|una|unos|unas|de|des|del|d')(\s+|\b)|(<\/?(i|b|sup|sub|sc|span style="small-caps"|span)>)/g;
+var citeKeyTitleBannedRe = /\b(a|an|the|some|from|on|in|to|of|do|with|der|die|das|ein|eine|einer|eines|einem|einen|un|une|la|le|l'|les|el|las|los|al|uno|una|unos|unas|de|des|del|d')(\s+|\b)|(<\/?(i|b|sup|sub|sc|span style="small-caps"|span)>)/g;
 var citeKeyConversionsRe = /%([a-zA-Z])/;
 
 var citeKeyConversions = {
@@ -482,6 +481,12 @@ var encodeFilePathRE = new RegExp('[' + filePathSpecialChars + ']', 'g');
 function encodeFilePathComponent(value) {
 	if (!value) return '';
 	return value.replace(encodeFilePathRE, "\\$&");
+}
+
+// We strip out {} in general, because \{ and \} break BibLaTeX
+function cleanFilePath(str) {
+	if (!str) return '';
+	return str.replace(/(?:\s*[{}]+)+\s*/g, ' ');
 }
 
 function doExport() {
@@ -848,16 +853,21 @@ function doExport() {
 
 			for (let i = 0; i < item.attachments.length; i++) {
 				var attachment = item.attachments[i];
+				var title = cleanFilePath(attachment.title),
+					path = null;
+
 				if (Zotero.getOption("exportFileData") && attachment.saveFile) {
-					attachment.saveFile(attachment.defaultPath, true);
-					attachmentString += ";" + encodeFilePathComponent(attachment.title) + ":"
-						+ encodeFilePathComponent(attachment.defaultPath) + ":"
-						+ encodeFilePathComponent(attachment.mimeType);
+					path = cleanFilePath(attachment.defaultPath);
+					attachment.saveFile(path, true);
 				}
 				else if (attachment.localPath) {
-					attachmentString += ";" + encodeFilePathComponent(attachment.title) + ":"
-						+ encodeFilePathComponent(attachment.localPath) + ":"
-						+ encodeFilePathComponent(attachment.mimeType);
+					path = cleanFilePath(attachment.localPath);
+				}
+
+				if (path) {
+					attachmentString += ";" + encodeFilePathComponent(title)
+						+ ":" + encodeFilePathComponent(path)
+						+ ":" + encodeFilePathComponent(attachment.mimeType);
 				}
 			}
 
@@ -868,4 +878,10 @@ function doExport() {
 
 		Zotero.write(",\n}");
 	}
+
+	Zotero.write("\n");
 }
+/** BEGIN TEST CASES **/
+var testCases = [
+]
+/** END TEST CASES **/

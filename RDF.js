@@ -12,7 +12,7 @@
 	},
 	"inRepository": true,
 	"translatorType": 1,
-	"lastUpdated": "2020-06-26 20:49:31"
+	"lastUpdated": "2026-08-12 16:51:38"
 }
 
 /*
@@ -39,6 +39,9 @@
 
 	***** END LICENSE BLOCK *****
 */
+const datasetType = ZU.fieldIsValidForType('title', 'dataset')
+	? 'dataset'
+	: 'document';
 
 function detectImport() {
 	// Make sure there are actually nodes
@@ -72,6 +75,8 @@ var n = {
 	og: "http://ogp.me/ns#",				// Used for Facebook's OpenGraph Protocol
 	article: "http://ogp.me/ns/article#",
 	book: "http://ogp.me/ns/book#",
+	music: "http://ogp.me/ns/music#",
+	video: "http://ogp.me/ns/video#",
 	so: "http://schema.org/",
 	codemeta: "https://codemeta.github.io/terms/"
 };
@@ -442,8 +447,7 @@ function detectType(newItem, node, ret) {
 				t.so = 'artwork'; break;
 			case 'datacatalog':
 			case 'dataset':
-				t.so = 'journalArticle'; break; // until dataset gets implemented
-
+				t.so = datasetType; break;
 			// specials cases
 			case "article":
 			// choose between journal, newspaper, and magazine articles
@@ -480,7 +484,7 @@ function detectType(newItem, node, ret) {
 				// process as file
 				t.zotero = "attachment";
 
-				var path = getFirstResults(node, [rdf + "resource"]);
+				var path = getFirstResults(node, [n.z + "path", rdf + "resource"]);
 				if (path) {
 					newItem.path = Zotero.RDF.getResourceURI(path[0]);
 				}
@@ -530,8 +534,10 @@ function detectType(newItem, node, ret) {
 				case 'conferenceposter':
 					t.dc = 'conferencePaper';
 					break;
+				case 'dataset':
+					t.dc = datasetType;
+					break;
 				case 'article': // from http://www.idealliance.org/specifications/prism/specifications/prism-controlled-vocabularies/prism-12-controlled-vocabularies
-				case 'dataset': // until dataset gets implemented
 				case 'journalitem':
 				case 'journalarticle':
 				case 'submittedjournalarticle':
@@ -562,6 +568,13 @@ function detectType(newItem, node, ret) {
 					t.dc = 'bookSection';
 					break;
 
+				// via examples from https://edoc.hu-berlin.de/
+				case 'bachelorthesis':
+				case 'masterthesis':
+				case 'doctoralthesis':
+					t.dc = 'thesis';
+					break;
+				
 				// from http://www.idealliance.org/specifications/prism/specifications/prism-controlled-vocabularies/prism-12-controlled-vocabularies
 				// some are the same as eprints and are handled above
 				case 'electronicbook':
@@ -607,7 +620,7 @@ function detectType(newItem, node, ret) {
 				// very broad
 					t.dcGuess = 'journalArticle';
 					break;
-				// collection, dataset, interactiveresource, physicalobject,
+				// collection, interactiveresource, physicalobject,
 				// service
 			}
 		}
@@ -635,10 +648,12 @@ function detectType(newItem, node, ret) {
 			case 'conferenceposter':
 				t.eprints = 'conferencePaper';
 				break;
+			case 'dataset':
+				t.eprints = datasetType;
+				break;
 			case 'journalitem':
 			case 'journalarticle':
 			case 'submittedjournalarticle':
-			case 'dataset': // map to dataset once we have it as item type
 			case 'article':
 				t.eprints = 'journalArticle';
 				break;
@@ -848,10 +863,18 @@ function detectType(newItem, node, ret) {
 function importItem(newItem, node) {
 	var ret = {};
 	var itemType = detectType(newItem, node, ret);
+	var zoteroType = getFirstResults(node, [n.z + "itemType", n.z + "type"], true);
 	var isZoteroRDF = false;
-	if (getFirstResults(node, [n.z + "itemType", n.z + "type"], true)) {
+	if (zoteroType) {
 		isZoteroRDF = true;
 	}
+	// A z:itemType that doesn't exist in this version (e.g., a Juris-M legal type like
+	// 'treaty'). detectType() ignores it, so we fall back to a generic type below and
+	// preserve the original type in Extra, where it round-trips and can be remapped if
+	// the type is ever added.
+	var unknownItemType = (zoteroType && isNaN(parseInt(zoteroType)) && !ZU.itemTypeExists(zoteroType))
+		? zoteroType
+		: null;
 	newItem.itemType = exports.itemType || itemType;
 	var container = ret.container;
 	var containerPeriodical = ret.containerPeriodical;
@@ -868,7 +891,11 @@ function importItem(newItem, node) {
 		n.og + "title",
 		n.so + "headline"], true);
 	if (!newItem.itemType) {
-		if (!newItem.title) {	// require the title
+		if (unknownItemType) {
+			// Original type is preserved in Extra below
+			newItem.itemType = "document";
+		}
+		else if (!newItem.title) {	// require the title
 			// (if not a known type)
 			return false;
 		}
@@ -997,10 +1024,13 @@ function importItem(newItem, node) {
 		n.so + "issueNumber"], true);
 
 
-	// number means the same thing as issue
-	// and will automatically then also map
-	// to patentNumber or reportNumber
-	newItem.number = newItem.issue;
+	// Move issue to number if issue isn't valid for this type,
+	// because number will automatically then also map to
+	// patentNumber or reportNumber
+	if (!ZU.fieldIsValidForType("issue", newItem.itemType)) {
+		newItem.number = newItem.issue;
+		delete newItem.issue;
+	}
 
 	// edition
 	newItem.edition = getFirstResults(node, [n.prism + "edition", n.prism2_0 + "edition", n.prism2_1 + "edition", n.bibo + "edition", n.so + "bookEdition", n.so + "version"], true);
@@ -1211,12 +1241,12 @@ function importItem(newItem, node) {
 	// type
 	let type = getFirstResults(node, [n.dc + "type", n.dc1_0 + "type", n.dcterms + "type"], true);
 
-	/** CUSTOM ITEM TYPE  -- Currently only Dataset **/
-	if (type && (type.toLowerCase() == "dataset" || type.toLowerCase() == "datacatalog")) {
+	/** CUSTOM ITEM TYPE  -- Keeping for <6.0.24 clients w/o dataset support **/
+	if (datasetType != "dataset" && type && (type.toLowerCase() == "dataset" || type.toLowerCase() == "datacatalog")) {
 		if (newItem.extra) {
-			newItem.extra += "\ntype: dataset";
+			newItem.extra += "\nType: dataset";
 		}
-		else newItem.extra = "type: dataset";
+		else newItem.extra = "Type: dataset";
 	}
 
 
@@ -1296,6 +1326,10 @@ function importItem(newItem, node) {
 	// extra for Zotero RDF
 	else if (isZoteroRDF) {
 		newItem.extra = getFirstResults(node, [n.dc + "description"], true);
+		// Preserve an item type that doesn't exist in this version (see above)
+		if (unknownItemType) {
+			newItem.extra = (newItem.extra ? newItem.extra + "\n" : "") + "Type: " + unknownItemType;
+		}
 	}
 	else if (!newItem.abstractNote) {
 		newItem.abstractNote = getFirstResults(node, [n.dc + "description", n.dcterms + "description"], true);
@@ -1395,7 +1429,15 @@ function importItem(newItem, node) {
 	var arcs = Zotero.RDF.getArcsOut(node);
 	for (let i = 0; i < arcs.length; i++) {
 		var uri = Zotero.RDF.getResourceURI(arcs[i]);
-		if (uri.substr(0, n.z.length) == n.z) {
+		if (uri.substr(0, n.z.length) == n.z
+				// Skip z:path, handled for attachments above
+				&& uri.substring(n.z.length) !== 'path'
+				// Skip z:itemType, which is handled above. Copying it here would override the
+				// detected/fallback type with a type that might not exist in this version
+				// (e.g., a Juris-M legal type).
+				&& uri.substring(n.z.length) !== 'itemType'
+				// Don't override newItem.creators with RDF nodes that will cause an import error
+				&& uri.substring(n.z.length) !== 'creators') {
 			var property = uri.substr(n.z.length);
 			newItem[property] = Zotero.RDF.getTargets(node, n.z + property)[0];
 		}
@@ -1751,6 +1793,56 @@ var testCases = [
 				"creators": [],
 				"itemID": "#test-report",
 				"reportNumber": "NLR-TP-96-464",
+				"attachments": [],
+				"tags": [],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "import",
+		"input": "<rdf:RDF\n xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n xmlns:z=\"http://www.zotero.org/namespaces/export#\"\n xmlns:dc=\"http://purl.org/dc/elements/1.1/\"\n xmlns:dcterms=\"http://purl.org/dc/terms/\"\n xmlns:bib=\"http://purl.org/net/biblio#\"\n xmlns:foaf=\"http://xmlns.com/foaf/0.1/\"\n xmlns:prism=\"http://prismstandard.org/namespaces/1.2/basic/\">\n    <rdf:Description rdf:about=\"#item_1\">\n        <z:itemType>treaty</z:itemType>\n        <dc:title>International Code for Ships Operating in Polar Waters (Polar Code)</dc:title>\n        <bib:authors>\n            <rdf:Seq>\n                <rdf:li>\n                    <foaf:Person>\n                        <foaf:surname>Int'l Mar. Org.</foaf:surname>\n                    </foaf:Person>\n                </rdf:li>\n            </rdf:Seq>\n        </bib:authors>\n        <prism:volume>34</prism:volume>\n        <bib:pages>243</bib:pages>\n        <dc:date>2017</dc:date>\n    </rdf:Description>\n</rdf:RDF>\n",
+		"items": [
+			{
+				"itemType": "document",
+				"title": "International Code for Ships Operating in Polar Waters (Polar Code)",
+				"creators": [
+					{
+						"creatorType": "author",
+						"lastName": "Int'l Mar. Org.",
+						"fieldMode": 1
+					}
+				],
+				"date": "2017",
+				"extra": "Type: treaty",
+				"itemID": "#item_1",
+				"attachments": [],
+				"tags": [],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "import",
+		"input": "<rdf:RDF\n xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n xmlns:z=\"http://www.zotero.org/namespaces/export#\"\n xmlns:dcterms=\"http://purl.org/dc/terms/\"\n xmlns:dc=\"http://purl.org/dc/elements/1.1/\"\n xmlns:bib=\"http://purl.org/net/biblio#\"\n xmlns:foaf=\"http://xmlns.com/foaf/0.1/\"\n xmlns:vcard=\"http://nwalsh.com/rdf/vCard#\"\n xmlns:prism=\"http://prismstandard.org/namespaces/1.2/basic/\">\n    <bib:Recording rdf:about=\"https://example.com/video\">\n        <z:itemType>videoRecording</z:itemType>\n        <z:creators>\n            <rdf:Seq>\n                <rdf:li>\n                    <foaf:Person>\n                        <foaf:surname>Lastname</foaf:surname>\n                        <foaf:givenName>Firstname</foaf:givenName>\n                    </foaf:Person>\n                </rdf:li>\n            </rdf:Seq>\n        </z:creators>\n        <dc:title>Video</dc:title>\n        <dcterms:abstract>Example video</dcterms:abstract>\n        <dc:date>2026-06-17</dc:date>\n        <z:libraryCatalog>Example.com</z:libraryCatalog>\n        <dc:identifier>\n            <dcterms:URI>\n               <rdf:value>https://example.com/video</rdf:value>\n            </dcterms:URI>\n        </dc:identifier>\n    </bib:Recording>\n</rdf:RDF>\n\n",
+		"items": [
+			{
+				"itemType": "videoRecording",
+				"title": "Video",
+				"creators": [
+					{
+						"creatorType": "creator",
+						"lastName": "Lastname",
+						"firstName": "Firstname"
+					}
+				],
+				"date": "2026-06-17",
+				"abstractNote": "Example video",
+				"itemID": "https://example.com/video",
+				"libraryCatalog": "Example.com",
+				"url": "https://example.com/video",
 				"attachments": [],
 				"tags": [],
 				"notes": [],

@@ -8,15 +8,15 @@
 	"priority": 100,
 	"inRepository": true,
 	"translatorType": 4,
-	"browserSupport": "gcisbv",
-	"lastUpdated": "2018-08-13 09:15:36"
+	"browserSupport": "gcsibv",
+	"lastUpdated": "2026-07-04 10:22:01"
 }
 
 /*
 	***** BEGIN LICENSE BLOCK *****
 
-	Copyright © 2018 Sebastian Berlin
-	
+	Copyright © 2024 Abe Jellinek
+
 	This file is part of Zotero.
 
 	Zotero is free software: you can redistribute it and/or modify
@@ -36,74 +36,66 @@
 */
 
 
-// attr()/text() v2
-function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null;}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null;}
-
-
 function detectWeb(doc, url) {
-	return "newspaperArticle";
+	if (url.includes('/nyheter/') && doc.querySelector('[data-page-type="NewsArticle"]')) {
+		return 'newspaperArticle';
+	}
+	else if (getSearchResults(doc, true)) {
+		return 'multiple';
+	}
+	return false;
 }
 
-
-function doWeb(doc, url) {
-	scrape(doc, url);
+function getSearchResults(doc, checkOnly) {
+	var items = {};
+	var found = false;
+	var rows = doc.querySelectorAll('section[class^="TeaserFeed"] li article > a');
+	for (let row of rows) {
+		let href = row.href;
+		let title = ZU.trimInternal(text(row, '[class^=TeaserHeadline]'));
+		if (!href || !title) continue;
+		if (checkOnly) return true;
+		found = true;
+		items[href] = title;
+	}
+	return found ? items : false;
 }
 
+async function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		let items = await Zotero.selectItems(getSearchResults(doc, false));
+		if (!items) return;
+		for (let url of Object.keys(items)) {
+			await scrape(await requestDocument(url));
+		}
+	}
+	else {
+		await scrape(doc, url);
+	}
+}
 
-function scrape(doc, url) {
-	var translator = Zotero.loadTranslator('web');
+async function scrape(doc, url = doc.location.href) {
+	let translator = Zotero.loadTranslator('web');
 	// Embedded Metadata
 	translator.setTranslator('951c027d-74ac-47d4-a107-9c3069ab7b48');
-
-	translator.setHandler('itemDone', function (obj, item) {
-		var nameNodes = ZU.xpath(doc, '//a[@class="nyh_article__author-email"]');
-
-		for (let nameNode of nameNodes) {
-			let nameString = nameNode.textContent;
-			let author = ZU.cleanAuthor(nameString, "author");
-			let firstNames = author.firstName.split(" ");
-			if(firstNames.length > 1) {
-				// Assume that there's only one first name and move any
-				// "extra" name to lastName.
-				author.firstName = firstNames[0];
-				author.lastName = firstNames[1] + " " + author.lastName;
-			}
-			item.creators.push(author);
+	translator.setDocument(doc);
+	
+	translator.setHandler('itemDone', (_obj, item) => {
+		item.date = ZU.strToISO(item.date);
+		item.section = text(doc, 'a[class^="SectionHeader"]') || text(doc, 'a[aria-current="page"]');
+		if (item.section == 'Uutiset' && !url.includes('/svenska/')) {
+			item.language = 'fi';
 		}
-		if (item.creators.length === 0) {
-			// No author was found, look for non-person authors, e.g. TT.
-			var authorString = ZU.xpathText(doc, '//span[@class="nyh_article__author-name"]');
-			var author = ZU.cleanAuthor(authorString, "author");
-			author.firstName = undefined;
-			author.fieldMode = true;
-			item.creators.push(author);
-		}
-
-		item.section =  ZU.xpathText(doc, '//a[@class="nyh_section-header__link"]');
-
-		var dateString = attr(doc, 'meta[property="article:published_time"]', "content");
-		if(dateString) {
-			// The date strings have the format "2018-02-28T02:24:59+01:00".
-			item.date = dateString.split("T")[0];
-		}
-
-		if(url.match(/\/nyheter\/uutiset\/(?!svenska\/)/)) {
-			// Uutiset articles are in Finnish, except when in the Swedish
-			// category.
-			item.language = "fi";
-		}
-
+		item.creators = Array.from(doc.querySelectorAll('[class*=ArticleFooterAuthor__name]'))
+			.map(author => ZU.cleanAuthor(author.textContent, 'author'));
 		item.complete();
 	});
 
-	translator.getTranslatorObject(function(trans) {
-		trans.itemType = "newspaperArticle";
-		trans.addCustomFields({
-			'twitter:description': 'abstractNote'
-		});
-		trans.doWeb(doc, url);
-	});
+	let em = await translator.getTranslatorObject();
+	em.itemType = 'newspaperArticle';
+	await em.doWeb(doc, url);
 }
+
 /** BEGIN TEST CASES **/
 var testCases = [
 	{
@@ -129,7 +121,8 @@ var testCases = [
 				"url": "https://www.svt.se/nyheter/lokalt/ost/kronobranneriet",
 				"attachments": [
 					{
-						"title": "Snapshot"
+						"title": "Snapshot",
+						"mimeType": "text/html"
 					}
 				],
 				"tags": [],
@@ -140,15 +133,15 @@ var testCases = [
 	},
 	{
 		"type": "web",
-		"url": "http://www.svt.se/nyheter/utrikes/varldens-morkaste-byggnad-finns-i-sydkorea",
+		"url": "https://www.svt.se/nyheter/utrikes/varldens-morkaste-byggnad-finns-i-sydkorea",
 		"items": [
 			{
 				"itemType": "newspaperArticle",
 				"title": "Världens mörkaste byggnad finns i Sydkorea",
 				"creators": [
 					{
-						"firstName": "Sophia",
-						"lastName": "Garcia Hasselberg",
+						"firstName": "Sophia Garcia",
+						"lastName": "Hasselberg",
 						"creatorType": "author"
 					}
 				],
@@ -161,7 +154,8 @@ var testCases = [
 				"url": "https://www.svt.se/nyheter/utrikes/varldens-morkaste-byggnad-finns-i-sydkorea",
 				"attachments": [
 					{
-						"title": "Snapshot"
+						"title": "Snapshot",
+						"mimeType": "text/html"
 					}
 				],
 				"tags": [],
@@ -179,9 +173,9 @@ var testCases = [
 				"title": "”Extremt viktigt” vikingafynd i England",
 				"creators": [
 					{
+						"firstName": "",
 						"lastName": "TT",
-						"creatorType": "author",
-						"fieldMode": true
+						"creatorType": "author"
 					}
 				],
 				"date": "2018-02-19",
@@ -193,7 +187,8 @@ var testCases = [
 				"url": "https://www.svt.se/nyheter/vetenskap/extremt-viktigt-vikingafynd-i-england",
 				"attachments": [
 					{
-						"title": "Snapshot"
+						"title": "Snapshot",
+						"mimeType": "text/html"
 					}
 				],
 				"tags": [],
@@ -231,7 +226,8 @@ var testCases = [
 				"url": "https://www.svt.se/nyheter/inrikes/trafikanter-varnas-vissa-vagar-hala-som-skridskobanor",
 				"attachments": [
 					{
-						"title": "Snapshot"
+						"title": "Snapshot",
+						"mimeType": "text/html"
 					}
 				],
 				"tags": [],
@@ -263,7 +259,8 @@ var testCases = [
 				"url": "https://www.svt.se/nyheter/uutiset/meankielen-paivaa-juhlitaan-pajalassa",
 				"attachments": [
 					{
-						"title": "Snapshot"
+						"title": "Snapshot",
+						"mimeType": "text/html"
 					}
 				],
 				"tags": [],
@@ -295,7 +292,8 @@ var testCases = [
 				"url": "https://www.svt.se/nyheter/uutiset/svenska/finska-gymnasieelever-flyttar-till-sverige-for-sport",
 				"attachments": [
 					{
-						"title": "Snapshot"
+						"title": "Snapshot",
+						"mimeType": "text/html"
 					}
 				],
 				"tags": [],
@@ -327,7 +325,8 @@ var testCases = [
 				"url": "https://www.svt.se/nyheter/utrikes/tyska-bilindustrin-testar-avgaser-pa-apor-och-manniskor",
 				"attachments": [
 					{
-						"title": "Snapshot"
+						"title": "Snapshot",
+						"mimeType": "text/html"
 					}
 				],
 				"tags": [],
@@ -335,6 +334,54 @@ var testCases = [
 				"seeAlso": []
 			}
 		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.svt.se/nyheter/lokalt/vasterbotten/per-hakan-och-mahari-dog-efter-sina-pass-pa-northvolt",
+		"items": [
+			{
+				"itemType": "newspaperArticle",
+				"title": "Per-Håkan och Mahari dog efter sina pass på Northvolt",
+				"creators": [
+					{
+						"firstName": "Oscar",
+						"lastName": "Hansson",
+						"creatorType": "author"
+					},
+					{
+						"firstName": "Oskar",
+						"lastName": "Jönsson",
+						"creatorType": "author"
+					},
+					{
+						"firstName": "Evelina",
+						"lastName": "Dahlberg",
+						"creatorType": "author"
+					}
+				],
+				"date": "2024-06-24",
+				"abstractNote": "Per-Håkan Söderström, 59, Mahari Bakari, 33, och en 19-årig man dog alla efter sina arbetspass på batterifabriken Northvolt. Nu utreder polisen dödsfallen på nytt. – Vågar de som jobbar kvar gå och lägga sig? Det kan ju hända dem med, säger Per-Håkans bror Lars-Erik.",
+				"language": "sv",
+				"libraryCatalog": "www.svt.se",
+				"publicationTitle": "SVT Nyheter",
+				"section": "Västerbotten",
+				"url": "https://www.svt.se/nyheter/lokalt/vasterbotten/per-hakan-och-mahari-dog-efter-sina-pass-pa-northvolt",
+				"attachments": [
+					{
+						"title": "Snapshot",
+						"mimeType": "text/html"
+					}
+				],
+				"tags": [],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.svt.se/nyheter/ekonomi/",
+		"items": "multiple"
 	}
 ]
 /** END TEST CASES **/

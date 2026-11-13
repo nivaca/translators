@@ -2,19 +2,19 @@
 	"translatorID": "23bacc11-98e3-4b78-b1ef-cc2c9a04b893",
 	"label": "reddit",
 	"creator": "Lukas Kawerau",
-	"target": "^https?://www\\.reddit\\.com",
+	"target": "^https?://[^/]+\\.reddit\\.com/",
 	"minVersion": "3.0",
 	"maxVersion": "",
 	"priority": 100,
 	"inRepository": true,
 	"translatorType": 4,
 	"browserSupport": "gcsibv",
-	"lastUpdated": "2020-10-29 20:46:27"
+	"lastUpdated": "2025-05-01 14:44:26"
 }
 
 /*
 	***** BEGIN LICENSE BLOCK *****
-	Copyright © 2020 Lukas Kawerau
+	Copyright © 2020-2021 Lukas Kawerau
 	This file is part of Zotero.
 	Zotero is free software: you can redistribute it and/or modify
 	it under the terms of the GNU Affero General Public License as published by
@@ -29,13 +29,8 @@
 	***** END LICENSE BLOCK *****
 */
 
-
-// attr()/text() v2
-// eslint-disable-next-line
-function attr(docOrElem,selector,attr,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.getAttribute(attr):null}function text(docOrElem,selector,index){var elem=index?docOrElem.querySelectorAll(selector).item(index):docOrElem.querySelector(selector);return elem?elem.textContent:null}
-
 function detectWeb(doc, url) {
-	var regex = new RegExp("\\/r\\/[a-z\\d]+\\/comments\\/");
+	var regex = /\/r\/[^/]+\/comments\//i;
 	if (regex.test(url)) {
 		return 'forumPost';
 	}
@@ -49,9 +44,25 @@ function getSearchResults(doc, checkOnly) {
 	var items = {};
 	var found = false;
 	var rows = ZU.xpath(doc, '//a[div/h3]');
+	if (!rows.length) rows = doc.querySelectorAll('.entry');
+	if (!rows.length) rows = doc.querySelectorAll('shreddit-feed shreddit-post');
 	for (let row of rows) {
-		var href = row.href + '.json';
-		var title = ZU.trimInternal(row.textContent);
+		let href, title;
+		// old.reddit.com
+		if (row.href) {
+			href = row.href;
+			title = ZU.trimInternal(row.textContent);
+		}
+		// sh.reddit.com
+		else if (row.hasAttribute('content-href')) {
+			href = row.getAttribute('content-href');
+			title = row.getAttribute('post-title');
+		}
+		// new.reddit.com
+		else {
+			href = attr(row, '.comments', 'href');
+			title = text(row, '.title > a');
+		}
 		if (!href || !title) continue;
 		if (checkOnly) return true;
 		found = true;
@@ -61,68 +72,72 @@ function getSearchResults(doc, checkOnly) {
 	return found ? items : false;
 }
 
-function doWeb(doc, url) {
-	var jsonUrl = url.split("?")[0] + '.json';
-	var commentRegex = new RegExp("\\/r\\/[a-z\\d]+\\/comments\\/[a-z\\d]+\\/[a-z\\d_]+\\/[a-z\\d]+\\/");
-	if (detectWeb(doc, url) == "multiple") {
-		Zotero.selectItems(getSearchResults(doc, false), function (items) {
-			if (!items) {
-				return;
-			}
-			var articles = [];
-			for (var i in items) {
-				articles.push(i);
-			}
-			ZU.doGet(articles, scrape);
-		});
-	}
-	else if (detectWeb(doc, url) == "forumPost" && commentRegex.test(url)) {
-		ZU.doGet(jsonUrl, scrapeComment);
+async function doWeb(doc, url) {
+	if (detectWeb(doc, url) == 'multiple') {
+		let items = await Zotero.selectItems(getSearchResults(doc, false));
+		if (!items) return;
+		for (let url of Object.keys(items)) {
+			await scrape(await requestDocument(url));
+		}
 	}
 	else {
-		ZU.doGet(jsonUrl, scrape);
+		await scrape(doc, url);
 	}
 }
 
+async function scrape(doc, url = doc.location.href) {
+	// Always get JSON from old., because the "sh." redesign
+	// doesn't support the .json endpoint
+	let jsonUrl = 'https://old.reddit.com'
+		// Strip trailing slash
+		+ doc.location.pathname.replace(/\/$/, '')
+		+ '.json';
+	let json = await requestJSON(jsonUrl);
+	let commentRegex = /\/r\/[^/]+\/comments\/[a-z\d]+\/[a-z\d_]+\/[a-z\d]+\//i;
+	if (commentRegex.test(url)) {
+		scrapeComment(doc, json);
+	}
+	else {
+		scrapePost(doc, json);
+	}
+}
 
-function scrape(text) {
+function scrapePost(doc, redditJson) {
 	var newItem = new Zotero.Item("forumPost");
-	var redditJson = JSON.parse(text);
 	var redditData = redditJson[0].data.children[0].data;
 	newItem.title = redditData.title;
-	newItem.creators.push(ZU.cleanAuthor(redditData.author, "author", true));
-	newItem.url = 'www.reddit.com' + redditData.permalink;
+	if (redditData.author != '[deleted]') {
+		newItem.creators.push(ZU.cleanAuthor(redditData.author, "author", true));
+	}
+	newItem.url = 'https://www.reddit.com' + redditData.permalink;
 	var postDate = new Date(redditData.created_utc * 1000);
 	newItem.date = postDate.toISOString();
 	newItem.postType = "Reddit Post";
 	newItem.forumTitle = 'r/' + redditData.subreddit;
-	newItem.websiteTitle = "reddit.com";
 	newItem.attachments.push({
-		url: 'https://www.reddit.com' + redditData.permalink,
-		title: "Reddit Post Snapshot",
-		mimetype: "text/html"
+		title: "Snapshot",
+		document: doc
 	});
 	newItem.complete();
 }
 
-function scrapeComment(text) {
+function scrapeComment(doc, redditJson) {
 	var newItem = new Zotero.Item("forumPost");
-	var redditJson = JSON.parse(text);
 	var parentData = redditJson[0].data.children[0].data;
 	var redditData = redditJson[1].data.children[0].data;
 	newItem.title = ZU.ellipsize(redditData.body, 20);
-	newItem.creators.push(ZU.cleanAuthor(redditData.author, "author", true));
-	newItem.url = 'www.reddit.com' + redditData.permalink;
+	if (redditData.author != '[deleted]') {
+		newItem.creators.push(ZU.cleanAuthor(redditData.author, "author", true));
+	}
+	newItem.url = 'https://www.reddit.com' + redditData.permalink;
 	var postDate = new Date(redditData.created_utc * 1000);
 	newItem.date = postDate.toISOString();
 	newItem.postType = "Reddit Comment";
 	newItem.forumTitle = 'r/' + redditData.subreddit;
-	newItem.websiteTitle = "reddit.com";
-	newItem.extra = 'Post URL: www.reddit.com' + parentData.permalink;
+	newItem.extra = 'Post URL: https://www.reddit.com' + parentData.permalink;
 	newItem.attachments.push({
-		url: 'https://www.reddit.com' + redditData.permalink,
-		title: "Reddit Comment Snapshot",
-		mimetype: "text/html"
+		title: "Snapshot",
+		document: doc
 	});
 	newItem.complete();
 }
@@ -151,20 +166,15 @@ var testCases = [
 			{
 				"itemType": "forumPost",
 				"title": "Zotero iPad bookmarklet not working",
-				"creators": [
-					{
-						"lastName": "cegmondiale",
-						"creatorType": "author"
-					}
-				],
+				"creators": [],
 				"date": "2020-10-08T18:43:48.000Z",
 				"forumTitle": "r/zotero",
 				"postType": "Reddit Post",
-				"url": "www.reddit.com/r/zotero/comments/j7ityb/zotero_ipad_bookmarklet_not_working/",
+				"url": "https://www.reddit.com/r/zotero/comments/j7ityb/zotero_ipad_bookmarklet_not_working/",
 				"attachments": [
 					{
-						"title": "Reddit Post Snapshot",
-						"mimetype": "text/html"
+						"title": "Snapshot",
+						"mimeType": "text/html"
 					}
 				],
 				"tags": [],
@@ -180,12 +190,7 @@ var testCases = [
 			{
 				"itemType": "forumPost",
 				"title": "I use the exact same…",
-				"creators": [
-					{
-						"lastName": "lukelbd93",
-						"creatorType": "author"
-					}
-				],
+				"creators": [],
 				"date": "2020-10-09T20:07:37.000Z",
 				"extra": "Post URL: www.reddit.com/r/zotero/comments/j7ityb/zotero_ipad_bookmarklet_not_working/",
 				"forumTitle": "r/zotero",
@@ -193,8 +198,71 @@ var testCases = [
 				"url": "www.reddit.com/r/zotero/comments/j7ityb/zotero_ipad_bookmarklet_not_working/g88zfcp/",
 				"attachments": [
 					{
-						"title": "Reddit Comment Snapshot",
-						"mimetype": "text/html"
+						"title": "Snapshot",
+						"mimeType": "text/html"
+					}
+				],
+				"tags": [],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://www.reddit.com/r/Professors/comments/o5pixw/for_tt_t_professors_why_exactly_is_vacation_and/",
+		"items": [
+			{
+				"itemType": "forumPost",
+				"title": "For TT / T professors, why exactly is vacation and sick time accrued?",
+				"creators": [
+					{
+						"lastName": "respeckKnuckles",
+						"creatorType": "author"
+					}
+				],
+				"date": "2021-06-22T15:17:27.000Z",
+				"forumTitle": "r/Professors",
+				"postType": "Reddit Post",
+				"url": "https://www.reddit.com/r/Professors/comments/o5pixw/for_tt_t_professors_why_exactly_is_vacation_and/",
+				"attachments": [
+					{
+						"title": "Snapshot",
+						"mimeType": "text/html"
+					}
+				],
+				"tags": [],
+				"notes": [],
+				"seeAlso": []
+			}
+		]
+	},
+	{
+		"type": "web",
+		"url": "https://old.reddit.com/r/zotero/",
+		"items": "multiple"
+	},
+	{
+		"type": "web",
+		"url": "https://old.reddit.com/r/zotero/comments/plh1kr/firefox_google_docs_reimplementation/",
+		"items": [
+			{
+				"itemType": "forumPost",
+				"title": "Firefox Google Docs re-implementation",
+				"creators": [
+					{
+						"lastName": "RedRoseTemplate",
+						"creatorType": "author"
+					}
+				],
+				"date": "2021-09-10T08:34:50.000Z",
+				"forumTitle": "r/zotero",
+				"postType": "Reddit Post",
+				"url": "https://www.reddit.com/r/zotero/comments/plh1kr/firefox_google_docs_reimplementation/",
+				"attachments": [
+					{
+						"title": "Snapshot",
+						"mimeType": "text/html"
 					}
 				],
 				"tags": [],
